@@ -213,14 +213,14 @@ namespace S7CommPlusDriver
             var tloa_2 = tloa[1].GetValue();
             var tloa_3 = tloa[2].GetValue();
 
-            GetTexts(tloa_1, tloa_2, tloa_3, tlsa, ref Alarms);
+            GetTexts(tloa_1, tloa_2, tloa_3, tlsa, ref Alarms, languageId);
 
             #endregion
 
             return 0;
         }
 
-        private void GetTexts(byte[] tloa_1, byte[] tloa_2, byte[] tloa_3, byte[] tlsa, ref Dictionary<ulong, AlarmData> Alarms)
+        private void GetTexts(byte[] tloa_1, byte[] tloa_2, byte[] tloa_3, byte[] tlsa, ref Dictionary<ulong, AlarmData> Alarms, int languageId)
         {
             uint pos1, pos2, pos3;
             uint t1_count, t1_relid, t1_relid_off;
@@ -266,6 +266,7 @@ namespace S7CommPlusDriver
                         Trace.WriteLine(String.Format("BrowseAlarms GetTexts(): CPU Alarm Id {0:X} is not in dictionary!", cpualarmid));
                         continue;
                     }
+                    Alarms[cpualarmid].AlText.LanguageId = languageId;
 
                     // Step 3: Get offsets to text array from table 3
                     pos3 = t2_off;
@@ -330,6 +331,74 @@ namespace S7CommPlusDriver
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Reads the active program alarms from the Plc (single poll).
+        /// 
+        /// Call example:
+        /// CultureInfo ci = new CultureInfo("de-DE");
+        /// var alarmList = new List<AlarmsDai>();
+        /// conn.GetActiveAlarms(out alarmList, ci.LCID);
+        /// foreach (var a in alarmList)
+        /// {
+        ///     Console.WriteLine(a.ToString());
+        /// }
+        /// </summary>
+        /// <param name="alarmList">Contains the alarms, empty if there is no active alarm</param>
+        /// <param name="languageId">Language id for retrieving the text entries, use language code e.g. 1031 for german</param>
+        /// <returns>0 on success</returns>
+        public int GetActiveAlarms(out List<AlarmsDai> alarmList, int languageId)
+        {
+            int res;
+
+            alarmList = new List<AlarmsDai>();
+
+            var exploreReq = new ExploreRequest(ProtocolVersion.V2);
+            exploreReq.ExploreId = Ids.NativeObjects_theAlarmSubsystem_Rid;
+            exploreReq.ExploreRequestId = Ids.AlarmSubsystem_itsUpdateRelevantDAI;
+            exploreReq.ExploreChildsRecursive = 1;
+            exploreReq.ExploreParents = 0;
+
+            // Add the requestes attributes.
+            // Request the same attributes we get from an alarm notification, so we can reuse other methods.
+            exploreReq.AddressList.Add(Ids.DAI_CPUAlarmID);
+            exploreReq.AddressList.Add(Ids.DAI_AllStatesInfo);
+            exploreReq.AddressList.Add(Ids.DAI_AlarmDomain);
+            exploreReq.AddressList.Add(Ids.DAI_Coming);
+            exploreReq.AddressList.Add(Ids.DAI_Going);
+            exploreReq.AddressList.Add(Ids.DAI_MessageType);
+            exploreReq.AddressList.Add(Ids.DAI_HmiInfo);
+            // Extra ones which we only need for compatibility with notification.
+            exploreReq.AddressList.Add(Ids.ObjectVariableTypeName);
+            exploreReq.AddressList.Add(Ids.DAI_SequenceCounter);
+            exploreReq.AddressList.Add(Ids.DAI_AlarmTexts_Rid);
+
+            res = SendS7plusFunctionObject(exploreReq);
+            if (res != 0)
+            {
+                return res;
+            }
+            m_LastError = 0;
+            WaitForNewS7plusReceived(m_ReadTimeout);
+            if (m_LastError != 0)
+            {
+                return m_LastError;
+            }
+
+            var exploreRes = ExploreResponse.DeserializeFromPdu(m_ReceivedPDU, true);
+            res = checkResponseWithIntegrity(exploreReq, exploreRes);
+            if (res != 0)
+            {
+                return res;
+            }
+
+            foreach (var obj in exploreRes.Objects)
+            {
+                alarmList.Add(AlarmsDai.FromNotificationObject(obj, languageId));
+            }
+
+            return 0;
         }
     }
 

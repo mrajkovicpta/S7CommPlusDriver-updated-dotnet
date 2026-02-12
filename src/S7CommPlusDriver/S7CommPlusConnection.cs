@@ -22,7 +22,6 @@ using System.Linq;
 using System.Diagnostics;
 using S7CommPlusDriver.ClientApi;
 using System.Text.RegularExpressions;
-using S7CommPlusDriver.Core;
 using System.Security.Cryptography;
 
 namespace S7CommPlusDriver
@@ -390,7 +389,7 @@ namespace S7CommPlusDriver
         /// <param name="password">PLC password (if set)</param>
         /// <param name="timeoutMs">read timeout in milliseconds (default: 5000 ms)</param>
         /// <returns></returns>
-        public int Connect(string address, string password = "", int timeoutMs = 5000)
+        public int Connect(string address, string password = "", string username = "", int timeoutMs = 5000)
         {
             if (timeoutMs > 0) {
                 m_ReadTimeout = timeoutMs;
@@ -520,117 +519,11 @@ namespace S7CommPlusDriver
             #endregion
 
             #region Step 6: Password
-            // Get current protection level
-            var getVarSubstreamedReq = new GetVarSubstreamedRequest(ProtocolVersion.V2);
-            getVarSubstreamedReq.InObjectId = m_SessionId;
-            getVarSubstreamedReq.SessionId = m_SessionId;
-            getVarSubstreamedReq.Address = Ids.EffectiveProtectionLevel;
-            res = SendS7plusFunctionObject(getVarSubstreamedReq);
-            if (res != 0)
-            {
+            res = legitimate(serverSession, password, username);
+            if (res != 0) {
                 m_client.Disconnect();
                 return res;
             }
-            m_LastError = 0;
-            WaitForNewS7plusReceived(m_ReadTimeout);
-            if (m_LastError != 0)
-            {
-                m_client.Disconnect();
-                return m_LastError;
-            }
-
-            var getVarSubstreamedRes = GetVarSubstreamedResponse.DeserializeFromPdu(m_ReceivedPDU);
-            if (getVarSubstreamedRes == null)
-            {
-                Console.WriteLine("S7CommPlusConnection - Connect.Password: GetVarSubstreamedResponse with Error!");
-                m_client.Disconnect();
-                return S7Consts.errIsoInvalidPDU;
-            }
-
-            // Check access level
-            UInt32 accessLevel = (getVarSubstreamedRes.Value as ValueUDInt).GetValue();
-            if (accessLevel > AccessLevel.FullAccess && password != "")
-            {
-                // Get challenge
-                var getVarSubstreamedReq_challange = new GetVarSubstreamedRequest(ProtocolVersion.V2);
-                getVarSubstreamedReq_challange.InObjectId = m_SessionId;
-                getVarSubstreamedReq_challange.SessionId = m_SessionId;
-                getVarSubstreamedReq_challange.Address = Ids.ServerSessionRequest;
-                res = SendS7plusFunctionObject(getVarSubstreamedReq_challange);
-                if (res != 0)
-                {
-                    m_client.Disconnect();
-                    return res;
-                }
-                m_LastError = 0;
-                WaitForNewS7plusReceived(m_ReadTimeout);
-                if (m_LastError != 0)
-                {
-                    m_client.Disconnect();
-                    return m_LastError;
-                }
-
-                var getVarSubstreamedRes_challenge = GetVarSubstreamedResponse.DeserializeFromPdu(m_ReceivedPDU);
-                if (getVarSubstreamedRes_challenge == null)
-                {
-                    Console.WriteLine("S7CommPlusConnection - Connect.Password: getVarSubstreamedRes_challenge with Error!");
-                    m_client.Disconnect();
-                    return S7Consts.errIsoInvalidPDU;
-                }
-
-                byte[] challenge = (getVarSubstreamedRes_challenge.Value as ValueUSIntArray).GetValue();
-
-                // Calculate challengeResponse [sha1(password) xor challenge]
-                byte[] challengeResponse;
-                using (SHA1Managed sha1 = new SHA1Managed())
-                {
-                    challengeResponse = sha1.ComputeHash(Encoding.UTF8.GetBytes(password));
-                }
-                if (challengeResponse.Length != challenge.Length)
-                {
-                    Console.WriteLine("S7CommPlusConnection - Connect.Password: challengeResponse.Length != challenge.Length");
-                    m_client.Disconnect();
-                    return S7Consts.errIsoInvalidPDU;
-                }
-                for (int i = 0; i < challengeResponse.Length; ++i)
-                {
-                    challengeResponse[i] = (byte)(challengeResponse[i] ^ challenge[i]);
-                }
-
-                // Send challengeResponse
-                var setVariableReq = new SetVariableRequest(ProtocolVersion.V2);
-                setVariableReq.InObjectId = m_SessionId;
-                setVariableReq.SessionId = m_SessionId;
-                setVariableReq.Address = Ids.ServerSessionResponse;
-                setVariableReq.Value = new ValueUSIntArray(challengeResponse);
-                res = SendS7plusFunctionObject(setVariableReq);
-                if (res != 0)
-                {
-                    m_client.Disconnect();
-                    return res;
-                }
-                m_LastError = 0;
-                WaitForNewS7plusReceived(m_ReadTimeout);
-                if (m_LastError != 0)
-                {
-                    m_client.Disconnect();
-                    return m_LastError;
-                }
-
-                var setVariableResponse = SetVariableResponse.DeserializeFromPdu(m_ReceivedPDU);
-                if (setVariableResponse == null)
-                {
-                    Console.WriteLine("S7CommPlusConnection - Connect.Password: setVariableResponse with Error!");
-                    m_client.Disconnect();
-                    return S7Consts.errIsoInvalidPDU;
-                }
-
-            }
-            else if (accessLevel > AccessLevel.FullAccess)
-            {
-                Console.WriteLine("S7CommPlusConnection - Connect.Password: Warning: Access level is not fullaccess but no password set!");
-            }
-
             #endregion
 
             // If everything has been error-free up to this point, then the connection has been established successfully.
@@ -1097,7 +990,7 @@ namespace S7CommPlusDriver
         /// <exception cref="Exception">Symbol syntax error</exception>
         private void calcAccessSeqFor1DimArray(ref string symbol, PVartypeListElement varType, VarInfo varInfo)
         {
-            Regex re = new Regex(@"^\[(\d+)\]");
+            Regex re = new Regex(@"^\[(-?\d+)\]");
             Match m = re.Match(symbol);
             if (!m.Success) throw new Exception("Symbol syntax error");
             parseSymbolLevel(ref symbol); // remove index from symbol string
@@ -1122,16 +1015,14 @@ namespace S7CommPlusDriver
         /// <exception cref="Exception">Symbol syntax error</exception>
         private void calcAccessSeqForMDimArray(ref string symbol, PVartypeListElement varType, VarInfo varInfo)
         {
-            Regex re = new Regex(@"^\[([0-9, ]+)\]");
+            Regex re = new Regex(@"^\[( ?-?\d+ ?(, ?-?\d+ ?)+)\]");
             Match m = re.Match(symbol);
             if (!m.Success) throw new Exception("Symbol syntax error");
             parseSymbolLevel(ref symbol); // remove index from symbol string
             string idxs = m.Groups[1].Value.Replace(" ", "");
 
-            uint[] indexes = Array.ConvertAll(idxs.Split(','), e => uint.Parse(e));
+            int[] indexes = Array.ConvertAll(idxs.Split(','), e => int.Parse(e));
             var ioit = (IOffsetInfoType_MDim)varType.OffsetInfoType;
-            uint ArrayElementCount = ioit.GetArrayElementCount();
-            int ArrayLowerBounds = ioit.GetArrayLowerBounds();
             uint[] MdimArrayElementCount = (uint[])ioit.GetMdimArrayElementCount().Clone();
             int[] MdimArrayLowerBounds = ioit.GetMdimArrayLowerBounds();
 
@@ -1141,7 +1032,7 @@ namespace S7CommPlusDriver
             // check bounds
             for (int i = 0; i < dimCount; ++i)
             {
-                indexes[i] = (uint)(indexes[i] - MdimArrayLowerBounds[dimCount - i - 1]);
+                indexes[i] = (indexes[i] - MdimArrayLowerBounds[dimCount - i - 1]);
                 if (indexes[i] > MdimArrayElementCount[dimCount - i - 1]) throw new Exception("Out of bounds");
                 if (indexes[i] < 0) throw new Exception("Out of bounds");
             }
@@ -1161,10 +1052,10 @@ namespace S7CommPlusDriver
             dimSize[dimCount - 1] = g;
 
             // calc id
-            uint arrayIndex = 0;
+            int arrayIndex = 0;
             for (int i = 0; i < dimCount; ++i)
             {
-                arrayIndex += indexes[i] * dimSize[dimCount - i - 1];
+                arrayIndex += indexes[i] * (int)dimSize[dimCount - i - 1];
             }
 
             varInfo.AccessSequence += "." + String.Format("{0:X}", arrayIndex);
@@ -1189,9 +1080,17 @@ namespace S7CommPlusDriver
             if (idx < 0) return null;
             PVartypeListElement varType = pObj.VartypeList.Elements[idx];
             varInfo.AccessSequence += "." + String.Format("{0:X}", varType.LID);
+            bool is1Dim = false;
             if (varType.OffsetInfoType.Is1Dim())
             {
-                calcAccessSeqFor1DimArray(ref symbol, varType, varInfo);
+                if (symbol == "")
+                {
+                    is1Dim = true;
+                }
+                else
+                {
+                    calcAccessSeqFor1DimArray(ref symbol, varType, varInfo);
+                }
             }
             if (varType.OffsetInfoType.IsMDim())
             {
@@ -1199,6 +1098,10 @@ namespace S7CommPlusDriver
             }
             if (varType.OffsetInfoType.HasRelation())
             {
+                if (symbol.Length <= 0 && varType.Softdatatype == Softdatatype.S7COMMP_SOFTDATATYPE_DTL)
+                {
+                    return PlcTags.TagFactory(varInfo.Name, new ItemAddress(varInfo.AccessSequence), varType.Softdatatype, is1Dim);
+                }
                 if (symbol.Length <= 0)
                 {
                     return null;
@@ -1211,7 +1114,7 @@ namespace S7CommPlusDriver
             }
             else
             {
-                return PlcTags.TagFactory(varInfo.Name, new ItemAddress(varInfo.AccessSequence), varType.Softdatatype);
+                return PlcTags.TagFactory(varInfo.Name, new ItemAddress(varInfo.AccessSequence), varType.Softdatatype, is1Dim);
             }
         }
 
