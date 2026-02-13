@@ -3,7 +3,6 @@
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Library</OutputType>
     <StartupObject />
-    <PostBuildEvent>xcopy /y /d  "$(ProjectDir)OpenSSL-dll-$(PlatformName)\*.dll" "$(ProjectDir)$(OutDir)"</PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
     <OutputPath>bin\x64\Debug\</OutputPath>
