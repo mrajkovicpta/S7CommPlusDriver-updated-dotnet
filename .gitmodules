@@ -1,0 +1,3 @@
+[submodule "EthernetIpSharp"]
+	path = EthernetIpSharp
+	url = https://github.com/CristianMori/EthernetIpSharp.git
